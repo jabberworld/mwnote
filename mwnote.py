@@ -59,7 +59,7 @@ async def run(config_file):
             return
         stopping = True
         log.info('Получен сигнал завершения')
-        asyncio.create_task(bot.disconnect())
+        bot.disconnect()
 
     for signum in (signal.SIGINT, signal.SIGTERM):
         try:

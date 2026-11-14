@@ -82,8 +82,9 @@ class MwnoteBot(ClientXMPP):
             self._direct_reply(msg, texts.UNAUTHORIZED)
             return
         if self.cfg.chat_markers:
-            self.send_message(mto=msg['from'], mbody=None, mtype='chat',
-                              mchat_state='composing')
+            marker = self.make_message(mto=msg['from'], mtype='chat')
+            marker['chat_state'] = 'composing'
+            marker.send()
         try:
             answer = await self.core.handle_direct(user, body)
         except Exception:
