@@ -188,3 +188,5 @@
   <opencode@localhost>`; локальный `git config` обновлён.
 - Старые коммиты `4fa0398`…`8dcbf37` и исторические упоминания
   `big-pickle` не переписываются.
+- Коммит: `11b5cf8`; результат сохранён в `memory_store`
+  (`commit-author-model-rule-2026-11-14`).
