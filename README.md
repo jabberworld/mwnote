@@ -41,6 +41,69 @@ python3 mwnote.py -c mwnote.conf -d   # подробный лог
 заданы `host` и `port`, бот подключается к ним напрямую, иначе используется
 SRV-запись домена.
 
+## Запуск через systemd
+
+В репозитории есть образец `mwnote.service.example` для размещения:
+
+- проект — `/opt/mwnote`;
+- конфиг — `/etc/mwnote/mwnote.conf`;
+- SQLite — `/var/lib/mwnote/mwnote.sqlite3`;
+- пользователь сервиса — `mwnote`.
+
+Создайте пользователя и подготовьте каталог проекта:
+
+```bash
+sudo useradd --system --home-dir /opt/mwnote --shell /usr/sbin/nologin mwnote
+sudo install -d -o mwnote -g mwnote /opt/mwnote
+# разместите файлы проекта в /opt/mwnote
+sudo chown -R mwnote:mwnote /opt/mwnote
+sudo -u mwnote python3 -m venv /opt/mwnote/.venv
+sudo -u mwnote /opt/mwnote/.venv/bin/pip install -r /opt/mwnote/requirements.txt
+```
+
+Разместите конфиг и задайте абсолютный путь к БД:
+
+```bash
+sudo install -d -m 0750 -o root -g mwnote /etc/mwnote
+sudo install -m 0600 -o mwnote -g mwnote mwnote.conf /etc/mwnote/mwnote.conf
+```
+
+Файл конфига должен быть доступен сервису на запись: команды `add` и `del`
+перезаписывают его.
+
+В `/etc/mwnote/mwnote.conf`:
+
+```ini
+[storage]
+db_path = /var/lib/mwnote/mwnote.sqlite3
+```
+
+Относительный `mwnote.sqlite3` попал бы в `/etc/mwnote`, куда сервису
+писать нельзя. Каталог `/var/lib/mwnote` создаётся автоматически
+директивой `StateDirectory=mwnote`.
+
+Установите и запустите unit:
+
+```bash
+sudo cp mwnote.service.example /etc/systemd/system/mwnote.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now mwnote
+```
+
+Логи:
+
+```bash
+journalctl -u mwnote -f
+```
+
+После обновления кода:
+
+```bash
+sudo systemctl restart mwnote
+```
+
+Пути, пользователя и имя unit-файла можно изменить под своё размещение.
+
 ## Первичная настройка
 
 1. Напишите боту в личные сообщения с JID из `[admins] list`.
@@ -138,7 +201,8 @@ Selftest проверяет конфиг, sqlite, клиент MediaWiki, раз
 
 - Одна MediaWiki и одна учётная запись на весь экземпляр бота.
 - Нет автоматического переподключения к XMPP: после потери соединения
-  процесс завершается (перезапуск — через systemd/supervisor).
+  процесс завершается (перезапуск — через systemd, пример —
+  `mwnote.service.example`).
 - Пароль MediaWiki хранится в SQLite без шифрования.
 - Если автовход в комнату после рестарта не удался, запись о комнате
   сохраняется; используйте `leave` и `join` для повторного входа.

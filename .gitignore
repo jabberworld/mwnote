@@ -5,6 +5,9 @@ mwnote.conf
 *.key
 *.log
 
+# Local systemd unit
+mwnote.service
+
 # Test/tooling environments
 .testlibs/
 .venv/
