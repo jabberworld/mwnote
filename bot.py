@@ -13,6 +13,7 @@ log = logging.getLogger('mwnote.bot')
 ROLE_RANK = {'none': 0, 'visitor': 1, 'participant': 2, 'moderator': 3}
 AFFILIATION_MODERATORS = {'owner', 'admin'}
 CHUNK_LIMIT = 3000
+JOIN_TIMEOUT = 30
 
 
 class MwnoteBot(ClientXMPP):
@@ -137,14 +138,75 @@ class MwnoteBot(ClientXMPP):
 
     async def _join_room(self, room, nick):
         room_jid = JID(room)
+        xep = self['xep_0045']
+        loop = asyncio.get_running_loop()
+        outcome = loop.create_future()
+
+        def finish(value):
+            if not outcome.done():
+                outcome.set_result(value)
+
+        def on_self(pres):
+            try:
+                item_nick = pres['muc']['item_nick']
+            except Exception:
+                item_nick = None
+            actual = item_nick or pres['from'].resource or nick
+            finish((True, actual))
+
+        def on_error(pres):
+            try:
+                condition = pres['error']['condition']
+            except Exception:
+                condition = None
+            finish((False, str(condition or 'presence error')))
+
+        self.add_event_handler(
+            'muc::%s::self-presence' % room_jid, on_self)
+        self.add_event_handler(
+            'muc::%s::presence-error' % room_jid, on_error)
+        join_task = asyncio.create_task(
+            xep.join_muc_wait(
+                room_jid, nick, maxchars=0, timeout=None))
         try:
-            await self['xep_0045'].join_muc_wait(
-                room_jid, nick, maxchars=0, timeout=30)
-        except Exception as exc:
-            log.warning('Не удалось войти в %s как %s: %s', room, nick, exc)
-            return False, str(exc) or type(exc).__name__
-        actual = self['xep_0045'].our_nicks.get(None, {}).get(room_jid) or nick
-        return True, actual
+            done, _ = await asyncio.wait(
+                {outcome, join_task}, timeout=JOIN_TIMEOUT,
+                return_when=asyncio.FIRST_COMPLETED)
+            if outcome in done:
+                ok, value = outcome.result()
+            elif join_task in done:
+                if join_task.cancelled():
+                    ok, value = False, 'CancelledError'
+                else:
+                    exc = join_task.exception()
+                    if exc is None:
+                        actual = (xep.our_nicks.get(None, {})
+                                  .get(room_jid) or nick)
+                        ok, value = True, actual
+                    else:
+                        ok, value = False, str(exc) or type(exc).__name__
+            else:
+                actual = (xep.our_nicks.get(None, {})
+                          .get(room_jid) or nick)
+                role = xep.get_jid_property(room_jid, actual, 'role')
+                if role:
+                    log.info('Вход в %s подтверждён после таймаута', room)
+                    ok, value = True, actual
+                else:
+                    ok, value = False, 'TimeoutError'
+        finally:
+            join_task.cancel()
+            await asyncio.gather(join_task, return_exceptions=True)
+            if not outcome.done():
+                outcome.cancel()
+            self.del_event_handler(
+                'muc::%s::self-presence' % room_jid, on_self)
+            self.del_event_handler(
+                'muc::%s::presence-error' % room_jid, on_error)
+        if not ok:
+            log.warning('Не удалось войти в %s как %s: %s',
+                        room, nick, value)
+        return ok, value
 
     async def _leave_room(self, room):
         room_jid = JID(room)

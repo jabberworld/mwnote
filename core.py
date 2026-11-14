@@ -10,7 +10,7 @@ from mediawiki import MediaWikiClient, MediaWikiError
 from notes import NoteEmptyError, NoteIndexError, NoteService
 
 STATE_TTL = 600
-ROOM_COMMANDS = {'help', '?', 'switch', 'list', '+', '-'}
+ROOM_COMMANDS = {'help', '?', 'switch', 'list', '+', '-', 'status'}
 ROOM_STATES = {'switch_page', 'note_add', 'note_delete'}
 CANCEL_WORDS = {'0', 'отмена', 'cancel', 'выход', 'exit', 'quit'}
 
@@ -121,6 +121,8 @@ class MwnoteCore:
             if number.isdigit():
                 return await self._delete_note(scope, int(number), user)
             return await self._prompt_delete(scope, user)
+        if command == 'status':
+            return self._status(scope)
         if room:
             return texts.MUC_ONLY
         if command in ('add', 'admin'):
@@ -356,6 +358,17 @@ class MwnoteCore:
                 return texts.LEAVE_ERROR % (room, error)
         self.storage.remove_room(room)
         return texts.LEFT % room
+
+    def _status(self, scope):
+        page = self.storage.get_page(scope)
+        url = self.storage.wiki_settings()['url']
+        if page and url:
+            return texts.STATUS % (page, url)
+        if page:
+            return texts.STATUS_NO_WIKI % page
+        if url:
+            return texts.STATUS_NO_PAGE % url
+        return texts.STATUS_EMPTY
 
     async def _switch(self, scope, title, user):
         title = title.strip()

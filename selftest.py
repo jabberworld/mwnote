@@ -17,6 +17,7 @@ if BASE_DIR not in sys.path:
 
 from slixmpp import JID
 
+import bot as bot_module
 from bot import MwnoteBot, match_addressed, split_chunks
 from config import Config
 from core import MwnoteCore
@@ -320,6 +321,13 @@ async def test_core_dialogs(tmp, cfg, storage, server):
     core = MwnoteCore(cfg, storage, 'bot', join_room=join_room,
                       leave_room=leave_room)
     user = 'admin@example.com'
+    other = 'nobody@example.com'
+
+    answer = await core.handle_direct(other, 'status')
+    check('core: status empty', answer == texts.STATUS_EMPTY, answer)
+    answer = core._status('user:%s' % user)
+    check('core: status no wiki',
+          answer == texts.STATUS_NO_WIKI % 'Page', answer)
 
     answer = await core.handle_direct(user, 'wiki')
     check('core: wiki prompt', answer == texts.ASK_WIKI_URL, answer)
@@ -333,6 +341,9 @@ async def test_core_dialogs(tmp, cfg, storage, server):
         server.url, 'admin'), answer)
     check('core: wiki persisted',
           storage.wiki_settings()['url'] == server.url)
+    answer = await core.handle_direct(other, 'status')
+    check('core: status no page',
+          answer == texts.STATUS_NO_PAGE % server.url, answer)
 
     answer = await core.handle_direct(user, 'switch')
     check('core: switch prompt', answer == texts.ASK_SWITCH, answer)
@@ -345,6 +356,9 @@ async def test_core_dialogs(tmp, cfg, storage, server):
           server.state.summaries[-1][1]
           == 'mwnote: создана страница заметок (admin)',
           server.state.summaries[-1])
+    answer = await core.handle_direct(user, 'status')
+    check('core: status direct',
+          answer == texts.STATUS % ('Заметки', server.url), answer)
 
     answer = await core.handle_direct(user, '+ Сходить в магазин')
     check('core: add note', answer == texts.NOTE_ADDED % (1,
@@ -419,6 +433,11 @@ async def test_core_dialogs(tmp, cfg, storage, server):
     check('core: add again', 'Добавлен пункт 1' in answer, answer)
 
     room = 'room@conf.example.com'
+    answer = await core.handle_room(room, room + '/admin', 'help')
+    check('core: room help detailed',
+          'status' in answer
+          and 'показать текущую страницу и адрес MediaWiki' in answer,
+          answer)
     answer = await core.handle_room(room, room + '/admin', 'switch MUC page')
     check('core: room switch', answer == texts.SWITCHED % 'MUC page', answer)
     check('core: room page scope',
@@ -427,6 +446,9 @@ async def test_core_dialogs(tmp, cfg, storage, server):
           server.state.summaries[-1][1]
           == 'mwnote: создана страница заметок (admin)',
           server.state.summaries[-1])
+    answer = await core.handle_room(room, room + '/admin', 'status')
+    check('core: room status',
+          answer == texts.STATUS % ('MUC page', server.url), answer)
     answer = await core.handle_room(room, room + '/admin', '+ Заметка в MUC')
     check('core: room add', 'Добавлен пункт 1' in answer, answer)
     check('core: summary room add',
@@ -493,6 +515,85 @@ async def test_bot_helpers(tmp, cfg, storage, server):
     chunks = split_chunks('x' * 7000, 3000)
     check('bot: chunking', len(chunks) >= 3 and all(
         len(chunk) <= 3000 for chunk in chunks), len(chunks))
+
+    class FakePresence:
+
+        def __init__(self, jid, nick, error=None):
+            self.jid = JID(jid)
+            self.nick = nick
+            self.error = error
+
+        def __getitem__(self, key):
+            if key == 'from':
+                return self.jid
+            if key == 'muc':
+                return {'item_nick': self.nick}
+            if key == 'error':
+                return {'condition': self.error}
+            raise KeyError(key)
+
+    class FakeMUC:
+
+        def __init__(self, owner, event=None, role=None):
+            self.owner = owner
+            self.event = event
+            self.role = role
+            self.our_nicks = {None: {}}
+            self.cancelled = False
+
+        async def join_muc_wait(self, room, nick, **kwargs):
+            self.our_nicks[None][room] = nick
+            if self.event == 'self':
+                self.owner.event(
+                    'muc::%s::self-presence' % room,
+                    FakePresence('%s/%s' % (room, nick), nick))
+            elif self.event == 'error':
+                self.owner.event(
+                    'muc::%s::presence-error' % room,
+                    FakePresence('%s/%s' % (room, nick), nick,
+                                 error='conflict'))
+            try:
+                await asyncio.sleep(3600)
+            except asyncio.CancelledError:
+                self.cancelled = True
+                raise
+
+        def get_jid_property(self, room, nick, prop, pfrom=None):
+            if prop == 'role':
+                return self.role
+            return None
+
+    original = bot.plugin._plugins['xep_0045']
+    fake = FakeMUC(bot, 'self')
+    bot.plugin._plugins['xep_0045'] = fake
+    ok, value = await bot._join_room('room@conf', 'nick')
+    check('bot: join self-presence without subject',
+          ok and value == 'nick', (ok, value))
+    check('bot: join task cancelled', fake.cancelled)
+
+    fake = FakeMUC(bot, 'error')
+    bot.plugin._plugins['xep_0045'] = fake
+    ok, value = await bot._join_room('room@conf', 'nick')
+    check('bot: join presence error',
+          not ok and value == 'conflict', (ok, value))
+
+    old_timeout = bot_module.JOIN_TIMEOUT
+    bot_module.JOIN_TIMEOUT = 0.05
+    try:
+        fake = FakeMUC(bot, role='moderator')
+        bot.plugin._plugins['xep_0045'] = fake
+        ok, value = await bot._join_room('room@conf', 'nick')
+        check('bot: join timeout fallback role',
+              ok and value == 'nick', (ok, value))
+
+        fake = FakeMUC(bot)
+        bot.plugin._plugins['xep_0045'] = fake
+        ok, value = await bot._join_room('room@conf', 'nick')
+        check('bot: join timeout without role',
+              not ok and value == 'TimeoutError', (ok, value))
+    finally:
+        bot_module.JOIN_TIMEOUT = old_timeout
+        bot.plugin._plugins['xep_0045'] = original
 
 
 async def main():
