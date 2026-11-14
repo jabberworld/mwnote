@@ -1,0 +1,38 @@
+[jabber]
+# JID и пароль бота для подключения к XMPP-серверу.
+jid = mwnote@example.com
+password = changeme
+# Ресурс (необязательно).
+resource = mwnote
+# Host/Port можно оставить пустыми — тогда используется SRV-запись домена.
+host =
+port =
+
+[admins]
+# Список JID администраторов через запятую. Управляется командами add/del.
+list = admin@example.com
+
+[muc]
+# Минимальный ранг в конференции: visitor | participant | moderator.
+# Владельцы и администраторы конференции всегда допускаются.
+min_role = moderator
+# Ник по умолчанию; пусто — локальная часть JID бота.
+default_nick =
+# Автоматически возвращаться в сохранённые конференции после перезапуска.
+autojoin = true
+
+[wiki]
+# Необязательные начальные настройки MediaWiki.
+# Их можно задать в диалоге командой wiki.
+url =
+user =
+password =
+
+[storage]
+# Путь к SQLite; относительный путь — от каталога конфиг-файла.
+db_path = mwnote.sqlite3
+
+[interface]
+language = ru
+# Индикация набора и подтверждения доставки (XEP-0085/XEP-0184).
+chat_markers = true

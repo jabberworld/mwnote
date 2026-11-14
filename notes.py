@@ -1,0 +1,153 @@
+"""Работа с пунктами заметок в вики-тексте MediaWiki."""
+
+import asyncio
+import re
+
+from mediawiki import MediaWikiError
+
+NOTE_RE = re.compile(r'^[ \t]*#(?!#)[ \t]*(.*?)[ \t]*$')
+NEW_PAGE_TEXT = '<!-- mwnote: страница заметок -->\n'
+
+
+class NoteError(Exception):
+    pass
+
+
+class NoteIndexError(NoteError):
+
+    def __init__(self, number, count):
+        self.number = number
+        self.count = count
+        super().__init__('пункт %d не найден (всего %d)' % (number, count))
+
+
+class NoteEmptyError(NoteError):
+    pass
+
+
+class NoteItem:
+
+    def __init__(self, number, line_index, text):
+        self.number = number
+        self.line_index = line_index
+        self.text = text
+
+
+def parse_items(text):
+    items = []
+    for line_index, line in enumerate((text or '').splitlines()):
+        match = NOTE_RE.match(line)
+        if match is None:
+            continue
+        value = match.group(1).strip()
+        items.append(NoteItem(len(items) + 1, line_index, value))
+    return items
+
+
+def normalize_note(text):
+    value = ' '.join((text or '').split())
+    if not value:
+        raise NoteEmptyError('пустой текст заметки')
+    return value
+
+
+def _split(text):
+    return (text or '').splitlines()
+
+
+def _join(lines):
+    if not lines:
+        return ''
+    return '\n'.join(lines).rstrip('\n') + '\n'
+
+
+def _add_line(text, value):
+    lines = _split(text)
+    items = parse_items(text)
+    new_line = '# %s' % value
+    if items:
+        lines.insert(items[-1].line_index + 1, new_line)
+    else:
+        if lines and lines[-1].strip():
+            lines.append('')
+        lines.append(new_line)
+    return _join(lines)
+
+
+def _delete_line(text, number):
+    items = parse_items(text)
+    if not 1 <= number <= len(items):
+        raise NoteIndexError(number, len(items))
+    lines = _split(text)
+    item = items[number - 1]
+    del lines[item.line_index]
+    return _join(lines), item.text
+
+
+class NoteService:
+
+    def __init__(self, client):
+        self.client = client
+        self._lock = asyncio.Lock()
+
+    async def _call(self, func, *args, **kwargs):
+        return await asyncio.to_thread(func, *args, **kwargs)
+
+    async def ensure_page(self, title):
+        async with self._lock:
+            page = await self._call(self.client.get_page, title)
+            if page.exists:
+                return page
+            try:
+                await self._call(
+                    self.client.edit_page, title, NEW_PAGE_TEXT,
+                    'mwnote: создана страница заметок', True)
+            except MediaWikiError as exc:
+                if exc.code != 'articleexists':
+                    raise
+            return await self._call(self.client.get_page, title)
+
+    async def _mutate(self, title, mutate):
+        async with self._lock:
+            for attempt in (0, 1):
+                page = await self._call(self.client.get_page, title)
+                if not page.exists:
+                    try:
+                        await self._call(
+                            self.client.edit_page, title, NEW_PAGE_TEXT,
+                            'mwnote: создана страница заметок', True)
+                    except MediaWikiError as exc:
+                        if exc.code != 'articleexists':
+                            raise
+                    page = await self._call(self.client.get_page, title)
+                new_text, result = mutate(page.text)
+                if new_text == page.text:
+                    return page.title, result
+                try:
+                    await self._call(
+                        self.client.edit_page, page.title, new_text,
+                        'mwnote: изменение заметок', False,
+                        page.timestamp)
+                except MediaWikiError as exc:
+                    if exc.code == 'editconflict' and attempt == 0:
+                        continue
+                    raise
+                return page.title, result
+        raise NoteError('не удалось сохранить страницу после конфликта правок')
+
+    async def list_notes(self, title):
+        page = await self.ensure_page(title)
+        return page.title, [item.text for item in parse_items(page.text)]
+
+    async def add_note(self, title, text):
+        value = normalize_note(text)
+        page_title, number = await self._mutate(
+            title, lambda current: (
+                _add_line(current, value),
+                len(parse_items(current)) + 1))
+        return page_title, number, value
+
+    async def delete_note(self, title, number):
+        page_title, deleted = await self._mutate(
+            title, lambda current: _delete_line(current, number))
+        return page_title, number, deleted
