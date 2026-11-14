@@ -51,6 +51,13 @@ def normalize_note(text):
     return value
 
 
+def make_summary(action, actor=None):
+    actor = ' '.join(str(actor or '').split())[:120]
+    if actor:
+        return 'mwnote: %s (%s)' % (action, actor)
+    return 'mwnote: %s' % action
+
+
 def _split(text):
     return (text or '').splitlines()
 
@@ -93,7 +100,7 @@ class NoteService:
     async def _call(self, func, *args, **kwargs):
         return await asyncio.to_thread(func, *args, **kwargs)
 
-    async def ensure_page(self, title):
+    async def ensure_page(self, title, actor=None):
         async with self._lock:
             page = await self._call(self.client.get_page, title)
             if page.exists:
@@ -101,13 +108,14 @@ class NoteService:
             try:
                 await self._call(
                     self.client.edit_page, title, NEW_PAGE_TEXT,
-                    'mwnote: создана страница заметок', True)
+                    make_summary('создана страница заметок', actor), True)
             except MediaWikiError as exc:
                 if exc.code != 'articleexists':
                     raise
             return await self._call(self.client.get_page, title)
 
-    async def _mutate(self, title, mutate):
+    async def _mutate(self, title, mutate, actor=None,
+                      action='изменение заметок'):
         async with self._lock:
             for attempt in (0, 1):
                 page = await self._call(self.client.get_page, title)
@@ -115,7 +123,8 @@ class NoteService:
                     try:
                         await self._call(
                             self.client.edit_page, title, NEW_PAGE_TEXT,
-                            'mwnote: создана страница заметок', True)
+                            make_summary('создана страница заметок', actor),
+                            True)
                     except MediaWikiError as exc:
                         if exc.code != 'articleexists':
                             raise
@@ -126,7 +135,7 @@ class NoteService:
                 try:
                     await self._call(
                         self.client.edit_page, page.title, new_text,
-                        'mwnote: изменение заметок', False,
+                        make_summary(action, actor), False,
                         page.timestamp)
                 except MediaWikiError as exc:
                     if exc.code == 'editconflict' and attempt == 0:
@@ -135,19 +144,21 @@ class NoteService:
                 return page.title, result
         raise NoteError('не удалось сохранить страницу после конфликта правок')
 
-    async def list_notes(self, title):
-        page = await self.ensure_page(title)
+    async def list_notes(self, title, actor=None):
+        page = await self.ensure_page(title, actor)
         return page.title, [item.text for item in parse_items(page.text)]
 
-    async def add_note(self, title, text):
+    async def add_note(self, title, text, actor=None):
         value = normalize_note(text)
         page_title, number = await self._mutate(
             title, lambda current: (
                 _add_line(current, value),
-                len(parse_items(current)) + 1))
+                len(parse_items(current)) + 1),
+            actor=actor, action='добавление заметки')
         return page_title, number, value
 
-    async def delete_note(self, title, number):
+    async def delete_note(self, title, number, actor=None):
         page_title, deleted = await self._mutate(
-            title, lambda current: _delete_line(current, number))
+            title, lambda current: _delete_line(current, number),
+            actor=actor, action='удаление заметки')
         return page_title, number, deleted

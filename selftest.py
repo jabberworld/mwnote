@@ -21,7 +21,7 @@ from bot import MwnoteBot, match_addressed, split_chunks
 from config import Config
 from core import MwnoteCore
 from mediawiki import MediaWikiClient, MediaWikiError
-from notes import NoteService, parse_items
+from notes import NoteService, make_summary, parse_items
 from storage import Storage
 import texts
 
@@ -73,6 +73,7 @@ class FakeWiki:
         self.revision = 0
         self.logged_in = False
         self.requests = []
+        self.summaries = []
 
     @staticmethod
     def _get(params, key, default=''):
@@ -135,6 +136,8 @@ class FakeWiki:
                 if self.pages[title]['timestamp'] != basetimestamp:
                     return 200, {'error': {'code': 'editconflict',
                                            'info': 'conflict'}}
+            self.summaries.append(
+                (title, self._get(params, 'summary'), createonly))
             self.revision += 1
             timestamp = '2026-01-01T00:00:%02dZ' % self.revision
             self.pages[title] = {
@@ -249,17 +252,41 @@ async def test_notes_and_mediawiki(tmp, server):
         failed = True
     check('mediawiki: wrong password rejected', failed)
 
+    check('notes: summary without actor',
+          make_summary('изменение заметок') == 'mwnote: изменение заметок')
+    check('notes: summary normalized actor',
+          make_summary('добавление заметки', ' bad\n nick ')
+          == 'mwnote: добавление заметки (bad nick)')
+
     service = NoteService(client)
-    title, items = await service.list_notes('Note page')
+    title, items = await service.list_notes('Note page', actor='testnick')
     check('notes: new page empty', title == 'Note page' and items == [])
-    _, number, value = await service.add_note('Note page', 'Первая')
+    check('notes: creation summary actor',
+          server.state.summaries[-1] == (
+              'Note page',
+              'mwnote: создана страница заметок (testnick)', True),
+          server.state.summaries[-1])
+    _, number, value = await service.add_note(
+        'Note page', 'Первая', actor='testnick')
     check('notes: add first', (number, value) == (1, 'Первая'))
+    check('notes: add summary actor',
+          server.state.summaries[-1][1]
+          == 'mwnote: добавление заметки (testnick)',
+          server.state.summaries[-1])
     _, number, _ = await service.add_note('Note page', 'Вторая')
     check('notes: add second', number == 2)
+    check('notes: add summary without actor',
+          server.state.summaries[-1][1] == 'mwnote: добавление заметки',
+          server.state.summaries[-1])
     _, items = await service.list_notes('Note page')
     check('notes: list', items == ['Первая', 'Вторая'], items)
-    _, number, value = await service.delete_note('Note page', 2)
+    _, number, value = await service.delete_note(
+        'Note page', 2, actor='testnick')
     check('notes: delete', (number, value) == (2, 'Вторая'))
+    check('notes: delete summary actor',
+          server.state.summaries[-1][1]
+          == 'mwnote: удаление заметки (testnick)',
+          server.state.summaries[-1])
     _, items = await service.list_notes('Note page')
     check('notes: list after delete', items == ['Первая'], items)
 
@@ -314,10 +341,18 @@ async def test_core_dialogs(tmp, cfg, storage, server):
           answer == texts.SWITCHED % 'Заметки', answer)
     check('core: page stored',
           storage.get_page('user:%s' % user) == 'Заметки')
+    check('core: summary direct switch',
+          server.state.summaries[-1][1]
+          == 'mwnote: создана страница заметок (admin)',
+          server.state.summaries[-1])
 
     answer = await core.handle_direct(user, '+ Сходить в магазин')
     check('core: add note', answer == texts.NOTE_ADDED % (1,
           'Сходить в магазин'), answer)
+    check('core: summary direct add',
+          server.state.summaries[-1][1]
+          == 'mwnote: добавление заметки (admin)',
+          server.state.summaries[-1])
     answer = await core.handle_direct(user, '+ Убрать в доме')
     check('core: add second note', 'Добавлен пункт 2' in answer, answer)
     answer = await core.handle_direct(user, 'list')
@@ -328,6 +363,10 @@ async def test_core_dialogs(tmp, cfg, storage, server):
     answer = await core.handle_direct(user, '- 2')
     check('core: delete note',
           answer == texts.NOTE_DELETED % (2, 'Убрать в доме'), answer)
+    check('core: summary direct delete',
+          server.state.summaries[-1][1]
+          == 'mwnote: удаление заметки (admin)',
+          server.state.summaries[-1])
     answer = await core.handle_direct(user, 'list')
     check('core: list after delete',
           'Убрать в доме' not in answer, answer)
@@ -384,13 +423,25 @@ async def test_core_dialogs(tmp, cfg, storage, server):
     check('core: room switch', answer == texts.SWITCHED % 'MUC page', answer)
     check('core: room page scope',
           storage.get_page('room:%s' % room) == 'MUC page')
+    check('core: summary room switch',
+          server.state.summaries[-1][1]
+          == 'mwnote: создана страница заметок (admin)',
+          server.state.summaries[-1])
     answer = await core.handle_room(room, room + '/admin', '+ Заметка в MUC')
     check('core: room add', 'Добавлен пункт 1' in answer, answer)
+    check('core: summary room add',
+          server.state.summaries[-1][1]
+          == 'mwnote: добавление заметки (admin)',
+          server.state.summaries[-1])
     answer = await core.handle_room(room, room + '/admin', 'list')
     check('core: room list', '1. Заметка в MUC' in answer, answer)
     answer = await core.handle_room(room, room + '/admin', '- 1')
     check('core: room delete', answer == texts.NOTE_DELETED % (
         1, 'Заметка в MUC'), answer)
+    check('core: summary room delete',
+          server.state.summaries[-1][1]
+          == 'mwnote: удаление заметки (admin)',
+          server.state.summaries[-1])
     answer = await core.handle_room(room, room + '/alice', 'switch')
     check('core: room switch prompt', answer == texts.ASK_SWITCH, answer)
     answer = await core.handle_room(room, room + '/bob', 'list')
@@ -399,6 +450,10 @@ async def test_core_dialogs(tmp, cfg, storage, server):
     answer = await core.handle_room(room, room + '/alice', 'MUC page 2')
     check('core: other user state preserved',
           answer == texts.SWITCHED % 'MUC page 2', answer)
+    check('core: summary room actor',
+          server.state.summaries[-1][1]
+          == 'mwnote: создана страница заметок (alice)',
+          server.state.summaries[-1])
     answer = await core.handle_room(room, room + '/admin', 'add')
     check('core: room admin command blocked', answer == texts.MUC_ONLY, answer)
 

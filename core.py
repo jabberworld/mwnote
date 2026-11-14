@@ -107,19 +107,19 @@ class MwnoteCore:
             if not rest:
                 self._set_state(scope, user, 'switch_page')
                 return texts.ASK_SWITCH
-            return await self._switch(scope, rest)
+            return await self._switch(scope, rest, user)
         if command == 'list':
-            return await self._list_notes(scope)
+            return await self._list_notes(scope, user)
         if command.startswith('+'):
             note = text[1:].strip()
             if not note:
                 self._set_state(scope, user, 'note_add')
                 return texts.ASK_NOTE_ADD
-            return await self._add_note(scope, note)
+            return await self._add_note(scope, note, user)
         if command.startswith('-'):
             number = text[1:].strip()
             if number.isdigit():
-                return await self._delete_note(scope, int(number))
+                return await self._delete_note(scope, int(number), user)
             return await self._prompt_delete(scope, user)
         if room:
             return texts.MUC_ONLY
@@ -217,21 +217,21 @@ class MwnoteCore:
         if not text.strip():
             return texts.PAGE_TITLE_EMPTY
         self.states.pop(scope, None)
-        return await self._switch(scope, text.strip())
+        return await self._switch(scope, text.strip(), user)
 
     async def _state_note_add(self, scope, user, state, text, room):
         note = text.strip()
         if not note:
             return texts.NOTE_EMPTY
         self.states.pop(scope, None)
-        return await self._add_note(scope, note)
+        return await self._add_note(scope, note, user)
 
     async def _state_note_delete(self, scope, user, state, text, room):
         value = text.strip()
         if not value.isdigit():
             return texts.ASK_DELETE_NOTE
         self.states.pop(scope, None)
-        return await self._delete_note(scope, int(value))
+        return await self._delete_note(scope, int(value), user)
 
     def _add_admin(self, raw):
         jid = self._valid_jid(raw)
@@ -294,6 +294,14 @@ class MwnoteCore:
             return None
         return str(jid.bare)
 
+    @staticmethod
+    def _actor(user):
+        try:
+            jid = JID(str(user))
+        except Exception:
+            return str(user)
+        return jid.resource or jid.user or str(user)
+
     async def _join(self, text):
         parts = text.split(None, 1)
         room = self._valid_room(parts[0])
@@ -349,11 +357,11 @@ class MwnoteCore:
         self.storage.remove_room(room)
         return texts.LEFT % room
 
-    async def _switch(self, scope, title):
+    async def _switch(self, scope, title, user):
         title = title.strip()
         try:
             service = await self._wiki_service()
-            page = await service.ensure_page(title)
+            page = await service.ensure_page(title, self._actor(user))
         except WikiNotConfigured:
             return texts.WIKI_NOT_CONFIGURED
         except MediaWikiError as exc:
@@ -367,13 +375,14 @@ class MwnoteCore:
             return None
         return page
 
-    async def _add_note(self, scope, note):
+    async def _add_note(self, scope, note, user):
         page = await self._current_page(scope)
         if page is None:
             return texts.PAGE_NOT_SELECTED
         try:
             service = await self._wiki_service()
-            page_title, number, value = await service.add_note(page, note)
+            page_title, number, value = await service.add_note(
+                page, note, self._actor(user))
         except WikiNotConfigured:
             return texts.WIKI_NOT_CONFIGURED
         except NoteEmptyError:
@@ -383,13 +392,14 @@ class MwnoteCore:
         self.storage.set_page(scope, page_title)
         return texts.NOTE_ADDED % (number, value)
 
-    async def _list_notes(self, scope):
+    async def _list_notes(self, scope, user):
         page = await self._current_page(scope)
         if page is None:
             return texts.PAGE_NOT_SELECTED
         try:
             service = await self._wiki_service()
-            page_title, items = await service.list_notes(page)
+            page_title, items = await service.list_notes(
+                page, self._actor(user))
         except WikiNotConfigured:
             return texts.WIKI_NOT_CONFIGURED
         except MediaWikiError as exc:
@@ -408,7 +418,8 @@ class MwnoteCore:
             return texts.PAGE_NOT_SELECTED
         try:
             service = await self._wiki_service()
-            page_title, items = await service.list_notes(page)
+            page_title, items = await service.list_notes(
+                page, self._actor(user))
         except WikiNotConfigured:
             return texts.WIKI_NOT_CONFIGURED
         except MediaWikiError as exc:
@@ -423,14 +434,14 @@ class MwnoteCore:
         lines.append(texts.ASK_DELETE_NOTE)
         return '\n'.join(lines)
 
-    async def _delete_note(self, scope, number):
+    async def _delete_note(self, scope, number, user):
         page = await self._current_page(scope)
         if page is None:
             return texts.PAGE_NOT_SELECTED
         try:
             service = await self._wiki_service()
             page_title, number, value = await service.delete_note(
-                page, number)
+                page, number, self._actor(user))
         except WikiNotConfigured:
             return texts.WIKI_NOT_CONFIGURED
         except NoteIndexError as exc:
