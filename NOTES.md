@@ -67,7 +67,8 @@
 - [x] Документация: `README.md`, `SPEC.md`.
 - [x] Финальные git-коммиты.
 - [x] Реальный smoke-тест MediaWiki, XMPP и MUC.
-- [ ] Обновить `memory_store` в Code Brain после smoke-теста.
+- [x] Обновить `memory_store` в Code Brain после smoke-теста
+      (`real-smoke-test-2026-11-14`).
 
 ## Журнал
 
