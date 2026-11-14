@@ -65,8 +65,9 @@
 - [x] Тесты: `python3 -m compileall .`, `python3 selftest.py` — все проверки
       проходят.
 - [x] Документация: `README.md`, `SPEC.md`.
-- [ ] Финальные git-коммиты.
-- [ ] `memory_store` в Code Brain (после коммитов).
+- [x] Финальные git-коммиты.
+- [x] Реальный smoke-тест MediaWiki, XMPP и MUC.
+- [ ] Обновить `memory_store` в Code Brain после smoke-теста.
 
 ## Журнал
 
@@ -102,3 +103,30 @@
 - Написаны `README.md` и `SPEC.md`.
 - Следующий шаг: git-коммиты от `opencode (big-pickle)
   <opencode@localhost>`, затем `memory_store`.
+
+### Сессия 3 — реальный smoke-тест
+
+- Изолированное окружение: `/tmp/mwnote-smoke`, конфиг и SQLite с правами
+  `0600`; секреты в репозиторий, `NOTES.md` и коммиты не попадали.
+- MediaWiki `https://linuxoid.in/api.php` (MediaWiki 1.43.9): вход `Mwnote`
+  успешен, права `edit`/`createpage` есть, `delete`/`undelete` нет.
+- Создана страница `Участник:Mwnote/mwnote-smoke`; заметки:
+  1. `smoke 2026-11-14 17:33:12` — через `NoteService`/API;
+  2. `XMPP smoke 2026-11-14T17:41Z` — через личный чат;
+  3. `MUC smoke 2026-11-14T17:45Z` — через конференцию.
+  Ни одна страница и ни одна строка данных не удалялись; команда `-` на
+  реальной вики не выполнялась.
+- XMPP: `help` от аккаунта вне `[admins]` → ровно `Не авторизован`.
+  После добавления в админы: `help`, `switch`, `+`, `list` работают.
+- MUC: временная комната `mwnote-smoke-1cc359e5@conference.linuxoid.in`
+  создана тестовым аккаунтом, настроена как temporary/hidden/open; бот
+  вошёл, выполнил `help`, `switch`, `+`, `list`; затем вышел, комната
+  уничтожена. После выхода список комнат в SQLite пуст.
+- Найдены и исправлены два реальных дефекта:
+  - `mwnote.py`: обработчик сигнала оборачивал уже созданный Future от
+    `disconnect()` в `asyncio.create_task()`;
+  - `bot.py`: `send_message(..., mchat_state=...)` не поддерживается
+    slixmpp; заменено на `make_message` + поле `chat_state`.
+- Коммит с исправлениями: `a30bf70`; офлайн-тесты после исправлений
+  проходят, завершение по `SIGTERM` чистое.
+- Следующий шаг: удалить `/tmp/mwnote-smoke`, обновить `memory_store`.
