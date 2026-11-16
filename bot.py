@@ -27,8 +27,10 @@ class MwnoteBot(ClientXMPP):
         self.storage = storage
         self.core = core
         self.default_nick = default_nick
+        self._hats = {}
         self.register_plugin('xep_0030')
         self.register_plugin('xep_0045')
+        self.register_plugin('xep_0317')
         self.register_plugin('xep_0085')
         self.register_plugin('xep_0184')
         self.register_plugin('xep_0199')
@@ -36,10 +38,13 @@ class MwnoteBot(ClientXMPP):
         self.add_event_handler('session_start', self._on_session_start)
         self.add_event_handler('message', self._on_message)
         self.add_event_handler('groupchat_message', self._on_groupchat)
+        self.add_event_handler('groupchat_presence',
+                               self._on_groupchat_presence)
         self.add_event_handler('presence_subscribe', self._on_subscribe)
 
     async def _on_session_start(self, event):
         log.info('Подключился как %s', self.boundjid)
+        self._hats.clear()
         self.send_presence(pstatus='mwnote: заметки MediaWiki. help — справка')
         if self.cfg.muc_autojoin:
             for room, nick in self.storage.list_rooms():
@@ -134,7 +139,43 @@ class MwnoteBot(ClientXMPP):
             return True
         role = xep.get_jid_property(room_jid, nick, 'role')
         need = ROLE_RANK.get(self.cfg.muc_min_role, 3)
-        return ROLE_RANK.get(role, 0) >= need
+        if ROLE_RANK.get(role, 0) >= need:
+            return True
+        return self._hat_allowed(room_jid, nick)
+
+    def _on_groupchat_presence(self, pres):
+        from_jid = pres['from']
+        if from_jid is None or not from_jid.bare or not from_jid.resource:
+            return
+        key = (str(from_jid.bare), from_jid.resource)
+        if pres['type'] in ('unavailable', 'error'):
+            self._hats.pop(key, None)
+            return
+        hats = pres.get_plugin('hats', check=True)
+        if hats is None:
+            self._hats.pop(key, None)
+            return
+        titles = {hat['title'].strip() for hat in hats if hat['title']}
+        if titles:
+            self._hats[key] = titles
+        else:
+            self._hats.pop(key, None)
+
+    def _hat_allowed(self, room_jid, nick):
+        title = self.cfg.muc_editor_hat_title
+        if not title:
+            return False
+        titles = self._hats.get((str(room_jid), nick), ())
+        allowed = title in titles
+        if allowed:
+            log.debug('Доступ по шапке "%s" в %s для %s',
+                      title, room_jid, nick)
+        return allowed
+
+    def _forget_room_hats(self, room_jid):
+        room = str(room_jid)
+        for key in [item for item in self._hats if item[0] == room]:
+            del self._hats[key]
 
     async def _join_room(self, room, nick):
         room_jid = JID(room)
@@ -220,6 +261,7 @@ class MwnoteBot(ClientXMPP):
         except Exception as exc:
             log.warning('Не удалось выйти из %s: %s', room, exc)
             return False, str(exc) or type(exc).__name__
+        self._forget_room_hats(room_jid)
         return True, None
 
     def _direct_reply(self, msg, text):

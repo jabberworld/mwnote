@@ -15,7 +15,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 if BASE_DIR not in sys.path:
     sys.path.insert(0, BASE_DIR)
 
-from slixmpp import JID
+from slixmpp import JID, Presence
 
 import bot as bot_module
 from bot import MwnoteBot, match_addressed, split_chunks
@@ -52,6 +52,7 @@ list = admin@example.com
 min_role = moderator
 default_nick =
 autojoin = true
+editor_hat_title = Editor
 
 [wiki]
 url =
@@ -203,6 +204,7 @@ async def test_config_and_storage(tmp):
     check('config: admins', cfg.admins == ['admin@example.com'])
     check('config: db path absolute', os.path.isabs(cfg.db_path))
     check('config: min role', cfg.muc_min_role == 'moderator')
+    check('config: editor hat title', cfg.muc_editor_hat_title == 'Editor')
     cfg.set_admins(['admin@example.com', 'second@example.com'])
     with open(config_path, 'r', encoding='utf-8') as handle:
         text = handle.read()
@@ -505,6 +507,38 @@ async def test_bot_helpers(tmp, cfg, storage, server):
         lambda room, nick, prop, pfrom=None: role.get(prop))
     check('bot: participant denied',
           not bot._allowed_in_room(JID('room@conf'), 'user'))
+
+    def hat_presence(title=None, ptype='available'):
+        pres = Presence()
+        pres['from'] = JID('room@conf/user')
+        pres['type'] = ptype
+        if title is not None:
+            pres['hats'].add_hats([
+                ('urn:example:hat#editor', title)])
+        return pres
+
+    bot._on_groupchat_presence(hat_presence('Editor'))
+    check('bot: editor hat allowed',
+          bot._allowed_in_room(JID('room@conf'), 'user'))
+    bot._on_groupchat_presence(hat_presence('Other'))
+    check('bot: other hat denied',
+          not bot._allowed_in_room(JID('room@conf'), 'user'))
+    bot._on_groupchat_presence(hat_presence('editor'))
+    check('bot: hat title exact',
+          not bot._allowed_in_room(JID('room@conf'), 'user'))
+    bot._on_groupchat_presence(hat_presence('Editor'))
+    cfg.parser.set('muc', 'editor_hat_title', '')
+    check('bot: empty hat config disabled',
+          not bot._allowed_in_room(JID('room@conf'), 'user'))
+    cfg.parser.set('muc', 'editor_hat_title', 'Editor')
+    bot._forget_room_hats(JID('room@conf'))
+    check('bot: room hats forgotten',
+          not bot._allowed_in_room(JID('room@conf'), 'user'))
+    bot._on_groupchat_presence(hat_presence('Editor'))
+    bot._on_groupchat_presence(hat_presence(None, 'unavailable'))
+    check('bot: unavailable hat denied',
+          not bot._allowed_in_room(JID('room@conf'), 'user'))
+
     role.update({'role': 'moderator'})
     check('bot: moderator allowed',
           bot._allowed_in_room(JID('room@conf'), 'user'))

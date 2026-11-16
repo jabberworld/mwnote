@@ -38,7 +38,7 @@ class Config:
             'admins': {'list': ''},
             'muc': {
                 'min_role': 'moderator', 'default_nick': '',
-                'autojoin': 'true',
+                'autojoin': 'true', 'editor_hat_title': '',
             },
             'wiki': {'url': '', 'user': '', 'password': ''},
             'storage': {'db_path': 'mwnote.sqlite3'},
@@ -110,6 +110,10 @@ class Config:
     @property
     def muc_default_nick(self):
         return self.get('muc', 'default_nick').strip()
+
+    @property
+    def muc_editor_hat_title(self):
+        return self.get('muc', 'editor_hat_title').strip()
 
     @property
     def muc_autojoin(self):
