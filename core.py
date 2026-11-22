@@ -7,10 +7,12 @@ from slixmpp import JID
 
 import texts
 from mediawiki import MediaWikiClient, MediaWikiError
-from notes import NoteEmptyError, NoteIndexError, NoteService
+from notes import (NoteAlreadyDeletedError, NoteEmptyError, NoteIndexError,
+                   NoteService)
 
 STATE_TTL = 600
-ROOM_COMMANDS = {'help', '?', 'switch', 'list', '+', '-', 'status'}
+ROOM_COMMANDS = {'help', '?', 'switch', 'list', 'list-full', '+', '-',
+                 'status'}
 ROOM_STATES = {'switch_page', 'note_add', 'note_delete'}
 CANCEL_WORDS = {'0', 'отмена', 'cancel', 'выход', 'exit', 'quit'}
 
@@ -110,6 +112,8 @@ class MwnoteCore:
             return await self._switch(scope, rest, user)
         if command == 'list':
             return await self._list_notes(scope, user)
+        if command == 'list-full':
+            return await self._list_notes(scope, user, full=True)
         if command.startswith('+'):
             note = text[1:].strip()
             if not note:
@@ -405,14 +409,14 @@ class MwnoteCore:
         self.storage.set_page(scope, page_title)
         return texts.NOTE_ADDED % (number, value)
 
-    async def _list_notes(self, scope, user):
+    async def _list_notes(self, scope, user, full=False):
         page = await self._current_page(scope)
         if page is None:
             return texts.PAGE_NOT_SELECTED
         try:
             service = await self._wiki_service()
             page_title, items = await service.list_notes(
-                page, self._actor(user))
+                page, self._actor(user), full=full)
         except WikiNotConfigured:
             return texts.WIKI_NOT_CONFIGURED
         except MediaWikiError as exc:
@@ -420,9 +424,13 @@ class MwnoteCore:
         self.storage.set_page(scope, page_title)
         if not items:
             return texts.NOTE_LIST_EMPTY % page_title
-        lines = [texts.NOTE_LIST_HEADER % page_title]
-        for index, item in enumerate(items, 1):
-            lines.append('%d. %s' % (index, item))
+        if full:
+            lines = [texts.NOTE_LIST_FULL_HEADER % page_title]
+        else:
+            lines = [texts.NOTE_LIST_HEADER % page_title]
+        for item in items:
+            marker = texts.NOTE_DELETED_MARK if item.deleted else ''
+            lines.append('%d. %s%s' % (item.number, marker, item.text))
         return '\n'.join(lines)
 
     async def _prompt_delete(self, scope, user):
@@ -442,8 +450,8 @@ class MwnoteCore:
             return texts.NOTE_NONE_DELETE
         self._set_state(scope, user, 'note_delete')
         lines = [texts.NOTE_LIST_HEADER % page_title]
-        for index, item in enumerate(items, 1):
-            lines.append('%d. %s' % (index, item))
+        for item in items:
+            lines.append('%d. %s' % (item.number, item.text))
         lines.append(texts.ASK_DELETE_NOTE)
         return '\n'.join(lines)
 
@@ -457,6 +465,8 @@ class MwnoteCore:
                 page, number, self._actor(user))
         except WikiNotConfigured:
             return texts.WIKI_NOT_CONFIGURED
+        except NoteAlreadyDeletedError as exc:
+            return texts.NOTE_ALREADY_DELETED % exc.number
         except NoteIndexError as exc:
             return texts.NOTE_BAD_NUMBER % (exc.number, exc.count)
         except MediaWikiError as exc:

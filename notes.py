@@ -6,6 +6,7 @@ import re
 from mediawiki import MediaWikiError
 
 NOTE_RE = re.compile(r'^[ \t]*#(?!#)[ \t]*(.*?)[ \t]*$')
+DELETED_RE = re.compile(r'^<s>(.*)</s>$', re.IGNORECASE | re.DOTALL)
 NEW_PAGE_TEXT = '<!-- mwnote: страница заметок -->\n'
 
 
@@ -25,12 +26,20 @@ class NoteEmptyError(NoteError):
     pass
 
 
+class NoteAlreadyDeletedError(NoteError):
+
+    def __init__(self, number):
+        self.number = number
+        super().__init__('пункт %d уже удалён' % number)
+
+
 class NoteItem:
 
-    def __init__(self, number, line_index, text):
+    def __init__(self, number, line_index, text, deleted=False):
         self.number = number
         self.line_index = line_index
         self.text = text
+        self.deleted = deleted
 
 
 def parse_items(text):
@@ -40,7 +49,11 @@ def parse_items(text):
         if match is None:
             continue
         value = match.group(1).strip()
-        items.append(NoteItem(len(items) + 1, line_index, value))
+        deleted_match = DELETED_RE.match(value)
+        deleted = deleted_match is not None
+        if deleted:
+            value = deleted_match.group(1).strip()
+        items.append(NoteItem(len(items) + 1, line_index, value, deleted))
     return items
 
 
@@ -85,9 +98,14 @@ def _delete_line(text, number):
     items = parse_items(text)
     if not 1 <= number <= len(items):
         raise NoteIndexError(number, len(items))
-    lines = _split(text)
     item = items[number - 1]
-    del lines[item.line_index]
+    if item.deleted:
+        raise NoteAlreadyDeletedError(number)
+    lines = _split(text)
+    line = lines[item.line_index]
+    match = NOTE_RE.match(line)
+    indent = line[:match.start(1)]
+    lines[item.line_index] = '%s<s>%s</s>' % (indent, item.text)
     return _join(lines), item.text
 
 
@@ -144,9 +162,12 @@ class NoteService:
                 return page.title, result
         raise NoteError('не удалось сохранить страницу после конфликта правок')
 
-    async def list_notes(self, title, actor=None):
+    async def list_notes(self, title, actor=None, full=False):
         page = await self.ensure_page(title, actor)
-        return page.title, [item.text for item in parse_items(page.text)]
+        items = parse_items(page.text)
+        if not full:
+            items = [item for item in items if not item.deleted]
+        return page.title, items
 
     async def add_note(self, title, text, actor=None):
         value = normalize_note(text)

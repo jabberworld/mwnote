@@ -22,7 +22,8 @@ from bot import MwnoteBot, match_addressed, split_chunks
 from config import Config
 from core import MwnoteCore
 from mediawiki import MediaWikiClient, MediaWikiError
-from notes import NoteService, make_summary, parse_items
+from notes import (NoteAlreadyDeletedError, NoteService, make_summary,
+                   parse_items)
 from storage import Storage
 import texts
 
@@ -282,7 +283,8 @@ async def test_notes_and_mediawiki(tmp, server):
           server.state.summaries[-1][1] == 'mwnote: добавление заметки',
           server.state.summaries[-1])
     _, items = await service.list_notes('Note page')
-    check('notes: list', items == ['Первая', 'Вторая'], items)
+    check('notes: list',
+          [item.text for item in items] == ['Первая', 'Вторая'], items)
     _, number, value = await service.delete_note(
         'Note page', 2, actor='testnick')
     check('notes: delete', (number, value) == (2, 'Вторая'))
@@ -290,8 +292,21 @@ async def test_notes_and_mediawiki(tmp, server):
           server.state.summaries[-1][1]
           == 'mwnote: удаление заметки (testnick)',
           server.state.summaries[-1])
+    text = server.state.pages['Note page']['text']
+    check('notes: soft delete line', '# <s>Вторая</s>' in text, text)
     _, items = await service.list_notes('Note page')
-    check('notes: list after delete', items == ['Первая'], items)
+    check('notes: list after delete',
+          [item.text for item in items] == ['Первая'], items)
+    _, all_items = await service.list_notes('Note page', full=True)
+    check('notes: full list after delete',
+          [(item.number, item.text, item.deleted) for item in all_items]
+          == [(1, 'Первая', False), (2, 'Вторая', True)], all_items)
+    try:
+        await service.delete_note('Note page', 2)
+        already_deleted = False
+    except NoteAlreadyDeletedError as exc:
+        already_deleted = exc.number == 2
+    check('notes: already deleted', already_deleted)
 
     server.state.pages['Preserve'] = {
         'title': 'Preserve',
@@ -307,10 +322,36 @@ async def test_notes_and_mediawiki(tmp, server):
     await service.delete_note('Preserve', 2)
     text = server.state.pages['Preserve']['text']
     check('notes: deleted line', '# two' not in text)
+    check('notes: soft delete markup', '# <s>two</s>' in text)
     check('notes: delete preserved heading', '== Заголовок ==' in text)
+    parsed = parse_items(text)
+    check('notes: soft delete numbering',
+          [(item.number, item.text, item.deleted) for item in parsed]
+          == [(1, 'one', False), (2, 'two', True),
+              (3, 'three', False)], parsed)
+    _, active = await service.list_notes('Preserve')
+    check('notes: active list numbers',
+          [(item.number, item.text) for item in active]
+          == [(1, 'one'), (3, 'three')], active)
+    _, full = await service.list_notes('Preserve', full=True)
+    check('notes: full list includes deleted',
+          [(item.number, item.text, item.deleted) for item in full]
+          == [(1, 'one', False), (2, 'two', True),
+              (3, 'three', False)], full)
+    _, number, _ = await service.add_note('Preserve', 'four')
+    check('notes: add after deleted gets next number', number == 4)
+    text = server.state.pages['Preserve']['text']
+    check('notes: new note after last',
+          text.index('# <s>two</s>') < text.index('# three')
+          < text.index('# four'), text)
     parsed = parse_items('# a\n## nested\n# b\n')
     check('notes: parser ignores nested',
           [item.text for item in parsed] == ['a', 'b'])
+    parsed = parse_items('# a\n# <S>b</S>\n# c\n')
+    check('notes: parser recognizes deleted',
+          [(item.number, item.text, item.deleted) for item in parsed]
+          == [(1, 'a', False), (2, 'b', True),
+              (3, 'c', False)], parsed)
 
 
 async def test_core_dialogs(tmp, cfg, storage, server):
@@ -386,6 +427,12 @@ async def test_core_dialogs(tmp, cfg, storage, server):
     answer = await core.handle_direct(user, 'list')
     check('core: list after delete',
           'Убрать в доме' not in answer, answer)
+    answer = await core.handle_direct(user, 'list-full')
+    check('core: list-full header',
+          answer.startswith(texts.NOTE_LIST_FULL_HEADER % 'Заметки'),
+          answer)
+    check('core: list-full deleted',
+          '2. [удалён] Убрать в доме' in answer, answer)
 
     answer = await core.handle_direct(user, 'add')
     check('core: add admin prompt', answer == texts.ASK_ADMIN_ADD, answer)
@@ -437,7 +484,7 @@ async def test_core_dialogs(tmp, cfg, storage, server):
     room = 'room@conf.example.com'
     answer = await core.handle_room(room, room + '/admin', 'help')
     check('core: room help detailed',
-          'status' in answer
+          'status' in answer and 'list-full' in answer
           and 'показать текущую страницу и адрес MediaWiki' in answer,
           answer)
     answer = await core.handle_room(room, room + '/admin', 'switch MUC page')
@@ -466,6 +513,9 @@ async def test_core_dialogs(tmp, cfg, storage, server):
           server.state.summaries[-1][1]
           == 'mwnote: удаление заметки (admin)',
           server.state.summaries[-1])
+    answer = await core.handle_room(room, room + '/admin', 'list-full')
+    check('core: room list-full',
+          '1. [удалён] Заметка в MUC' in answer, answer)
     answer = await core.handle_room(room, room + '/alice', 'switch')
     check('core: room switch prompt', answer == texts.ASK_SWITCH, answer)
     answer = await core.handle_room(room, room + '/bob', 'list')
