@@ -284,7 +284,8 @@ async def test_notes_and_mediawiki(tmp, server):
           server.state.summaries[-1])
     _, items = await service.list_notes('Note page')
     check('notes: list',
-          [item.text for item in items] == ['Первая', 'Вторая'], items)
+          [item.text for item in items]
+          == ['Первая (добавлено testnick)', 'Вторая'], items)
     _, number, value = await service.delete_note(
         'Note page', 2, actor='testnick')
     check('notes: delete', (number, value) == (2, 'Вторая'))
@@ -293,14 +294,17 @@ async def test_notes_and_mediawiki(tmp, server):
           == 'mwnote: удаление заметки (testnick)',
           server.state.summaries[-1])
     text = server.state.pages['Note page']['text']
-    check('notes: soft delete line', '# <s>Вторая</s>' in text, text)
+    check('notes: soft delete line',
+          '# <s>Вторая (удалено testnick)</s>' in text, text)
     _, items = await service.list_notes('Note page')
     check('notes: list after delete',
-          [item.text for item in items] == ['Первая'], items)
+          [item.text for item in items]
+          == ['Первая (добавлено testnick)'], items)
     _, all_items = await service.list_notes('Note page', full=True)
     check('notes: full list after delete',
           [(item.number, item.text, item.deleted) for item in all_items]
-          == [(1, 'Первая', False), (2, 'Вторая', True)], all_items)
+          == [(1, 'Первая (добавлено testnick)', False),
+              (2, 'Вторая (удалено testnick)', True)], all_items)
     try:
         await service.delete_note('Note page', 2)
         already_deleted = False
@@ -352,6 +356,39 @@ async def test_notes_and_mediawiki(tmp, server):
           [(item.number, item.text, item.deleted) for item in parsed]
           == [(1, 'a', False), (2, 'b', True),
               (3, 'c', False)], parsed)
+
+    server.state.pages['Attr'] = {
+        'title': 'Attr',
+        'text': '# старая строка\n',
+        'timestamp': '2026-01-01T00:00:10Z',
+    }
+    _, number, value = await service.add_note(
+        'Attr', 'тестовая строка', actor=' rain\n name ')
+    check('notes: attribution add result',
+          (number, value) == (2, 'тестовая строка'))
+    text = server.state.pages['Attr']['text']
+    check('notes: attribution added',
+          '# тестовая строка (добавлено rain name)' in text, text)
+    _, active = await service.list_notes('Attr')
+    check('notes: attribution in list',
+          [item.text for item in active]
+          == ['старая строка', 'тестовая строка (добавлено rain name)'],
+          active)
+    await service.delete_note('Attr', 2, actor='rain2')
+    text = server.state.pages['Attr']['text']
+    check('notes: attribution deleted',
+          '# <s>тестовая строка (добавлено rain name, '
+          'удалено rain2)</s>' in text, text)
+    await service.delete_note('Attr', 1, actor='rain2')
+    text = server.state.pages['Attr']['text']
+    check('notes: attribution old note',
+          '# <s>старая строка (удалено rain2)</s>' in text, text)
+    _, full = await service.list_notes('Attr', full=True)
+    check('notes: attribution full list',
+          [(item.number, item.text, item.deleted) for item in full]
+          == [(1, 'старая строка (удалено rain2)', True),
+              (2, 'тестовая строка (добавлено rain name, '
+                  'удалено rain2)', True)], full)
 
 
 async def test_core_dialogs(tmp, cfg, storage, server):
@@ -419,7 +456,8 @@ async def test_core_dialogs(tmp, cfg, storage, server):
           and '2. Убрать в доме' in answer, answer)
     answer = await core.handle_direct(user, '- 2')
     check('core: delete note',
-          answer == texts.NOTE_DELETED % (2, 'Убрать в доме'), answer)
+          answer == texts.NOTE_DELETED % (
+              2, 'Убрать в доме (добавлено admin)'), answer)
     check('core: summary direct delete',
           server.state.summaries[-1][1]
           == 'mwnote: удаление заметки (admin)',
@@ -432,7 +470,8 @@ async def test_core_dialogs(tmp, cfg, storage, server):
           answer.startswith(texts.NOTE_LIST_FULL_HEADER % 'Заметки'),
           answer)
     check('core: list-full deleted',
-          '2. [удалён] Убрать в доме' in answer, answer)
+          '2. [удалён] Убрать в доме '
+          '(добавлено admin, удалено admin)' in answer, answer)
 
     answer = await core.handle_direct(user, 'add')
     check('core: add admin prompt', answer == texts.ASK_ADMIN_ADD, answer)
@@ -508,14 +547,15 @@ async def test_core_dialogs(tmp, cfg, storage, server):
     check('core: room list', '1. Заметка в MUC' in answer, answer)
     answer = await core.handle_room(room, room + '/admin', '- 1')
     check('core: room delete', answer == texts.NOTE_DELETED % (
-        1, 'Заметка в MUC'), answer)
+        1, 'Заметка в MUC (добавлено admin)'), answer)
     check('core: summary room delete',
           server.state.summaries[-1][1]
           == 'mwnote: удаление заметки (admin)',
           server.state.summaries[-1])
     answer = await core.handle_room(room, room + '/admin', 'list-full')
     check('core: room list-full',
-          '1. [удалён] Заметка в MUC' in answer, answer)
+          '1. [удалён] Заметка в MUC '
+          '(добавлено admin, удалено admin)' in answer, answer)
     answer = await core.handle_room(room, room + '/alice', 'switch')
     check('core: room switch prompt', answer == texts.ASK_SWITCH, answer)
     answer = await core.handle_room(room, room + '/bob', 'list')

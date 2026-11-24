@@ -7,6 +7,7 @@ from mediawiki import MediaWikiError
 
 NOTE_RE = re.compile(r'^[ \t]*#(?!#)[ \t]*(.*?)[ \t]*$')
 DELETED_RE = re.compile(r'^<s>(.*)</s>$', re.IGNORECASE | re.DOTALL)
+ADDED_RE = re.compile(r'\(добавлено (.*)\)$')
 NEW_PAGE_TEXT = '<!-- mwnote: страница заметок -->\n'
 
 
@@ -64,11 +65,34 @@ def normalize_note(text):
     return value
 
 
+def normalize_actor(actor):
+    return ' '.join(str(actor or '').split())[:120]
+
+
 def make_summary(action, actor=None):
-    actor = ' '.join(str(actor or '').split())[:120]
+    actor = normalize_actor(actor)
     if actor:
         return 'mwnote: %s (%s)' % (action, actor)
     return 'mwnote: %s' % action
+
+
+def add_attribution(text, actor):
+    actor = normalize_actor(actor)
+    if not actor:
+        return text
+    return '%s (добавлено %s)' % (text, actor)
+
+
+def delete_attribution(text, actor):
+    actor = normalize_actor(actor)
+    if not actor:
+        return text
+    match = ADDED_RE.search(text)
+    if match is not None:
+        return '%s(добавлено %s, удалено %s)%s' % (
+            text[:match.start()], match.group(1), actor,
+            text[match.end():])
+    return '%s (удалено %s)' % (text, actor)
 
 
 def _split(text):
@@ -81,10 +105,10 @@ def _join(lines):
     return '\n'.join(lines).rstrip('\n') + '\n'
 
 
-def _add_line(text, value):
+def _add_line(text, value, actor=None):
     lines = _split(text)
     items = parse_items(text)
-    new_line = '# %s' % value
+    new_line = '# %s' % add_attribution(value, actor)
     if items:
         lines.insert(items[-1].line_index + 1, new_line)
     else:
@@ -94,7 +118,7 @@ def _add_line(text, value):
     return _join(lines)
 
 
-def _delete_line(text, number):
+def _delete_line(text, number, actor=None):
     items = parse_items(text)
     if not 1 <= number <= len(items):
         raise NoteIndexError(number, len(items))
@@ -105,7 +129,8 @@ def _delete_line(text, number):
     line = lines[item.line_index]
     match = NOTE_RE.match(line)
     indent = line[:match.start(1)]
-    lines[item.line_index] = '%s<s>%s</s>' % (indent, item.text)
+    deleted_text = delete_attribution(item.text, actor)
+    lines[item.line_index] = '%s<s>%s</s>' % (indent, deleted_text)
     return _join(lines), item.text
 
 
@@ -173,13 +198,13 @@ class NoteService:
         value = normalize_note(text)
         page_title, number = await self._mutate(
             title, lambda current: (
-                _add_line(current, value),
+                _add_line(current, value, actor),
                 len(parse_items(current)) + 1),
             actor=actor, action='добавление заметки')
         return page_title, number, value
 
     async def delete_note(self, title, number, actor=None):
         page_title, deleted = await self._mutate(
-            title, lambda current: _delete_line(current, number),
+            title, lambda current: _delete_line(current, number, actor),
             actor=actor, action='удаление заметки')
         return page_title, number, deleted
